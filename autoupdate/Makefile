@@ -12,7 +12,7 @@ define Package/$(PKG_NAME)
 	SECTION:=utils
 	CATEGORY:=Utilities
 	TITLE:=Upgrade OpenWrt by one-key
-	DEPENDS:=+bash +jq
+	DEPENDS:=+bash +jq +wget-ssl
 endef
 
 define Package/$(PKG_NAME)/description
