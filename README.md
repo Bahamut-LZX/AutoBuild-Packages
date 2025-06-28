@@ -1,3 +1,3 @@
-## Enhanced OpenWrt Packages
+## luci-app-autoupdate
 
-👻 一些修改过的 OpenWrt 软件包
+👻 Powered by [Hyy2001X](https://github.com/Hyy2001X)
