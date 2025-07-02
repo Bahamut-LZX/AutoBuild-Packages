@@ -3,10 +3,10 @@
 # AutoUpdate for Openwrt
 # Dependences: wget-ssl/wget/uclient-fetch curl jq expr sysupgrade
 
-Version=V6.10.5
+Version=V6.10.5.d1
 
 function TITLE() {
-	clear && echo "Openwrt-AutoUpdate Script by Hyy2001 ${Version}"
+	clear && echo "Openwrt-AutoUpdate Script by Hyy2001 (${Author} Diy)${Version}"
 }
 
 function SHELL_HELP() {
@@ -1397,7 +1397,7 @@ function KILL_PROCESS() {
 
 Script_Path="$(cd $(dirname $0) 2> /dev/null ; pwd 2> /dev/null)"
 Script_File="$0"
-Script_Url="https://raw.githubusercontent.com/Hyy2001X/AutoBuild-Packages/master/autoupdate/files/bin/autoupdate"
+Script_Url="https://raw.githubusercontent.com/Bahamut-LZX/AutoBuild-Packages/master/autoupdate/files/bin/autoupdate"
 
 Tmp_Path=/tmp/autoupdate
 Config_Path=/etc/autoupdate
