@@ -1,0 +1,21 @@
+name: action_build_repo
+
+on:
+  repository_dispatch:
+  push:
+    branches:
+      - master
+
+jobs:
+  call_workflow:
+    runs-on: ubuntu-latest
+    
+    steps:
+
+    -name: "Call Openwrt Build Workflow"
+     uses: peter-evans/repository-dispatch@v3
+     with:
+       token: ${{ secrets.PAT }}
+       repository: Bahamut-LZX/AutoBuild-Actions
+       event-type: build_event
+    
