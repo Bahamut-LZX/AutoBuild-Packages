@@ -15,7 +15,7 @@ jobs:
     - name: "Call Openwrt Build Workflow"
       uses: "peter-evans/repository-dispatch@v3"
       with:
-       token: ${{ secrets.PAT }}
+       token: ${{ secrets.GITHUB_TOKEN }}
        repository: Bahamut-LZX/AutoBuild-Actions
        event-type: build_event
     
