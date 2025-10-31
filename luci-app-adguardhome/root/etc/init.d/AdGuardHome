@@ -13,6 +13,25 @@ EXTRA_HELP="        do_redirect 0 or 1\
 		test_crontab
 		force_reload
 		isrunning"
+
+reset_dnsmasq_dns_redirect()
+{
+	redir_dns="$(uci -q get dhcp.@dnsmasq[0].backup_dns_redirect)"
+	[ "$redir_dns" = "1" ] && {
+		uci -q set dhcp.@dnsmasq[0].dns_redirect=1
+		uci -q delete dhcp.@dnsmasq[0].backup_dns_redirect
+	}
+}
+
+stop_dnsmasq_dns_redirect()
+{
+	redir_dns="$(uci -q get dhcp.@dnsmasq[0].dns_redirect)"
+	[ "$redir_dns" = "1" ] && {
+		uci -q set dhcp.@dnsmasq[0].dns_redirect=0
+		uci -q set dhcp.@dnsmasq[0].backup_dns_redirect=1
+	}
+}
+
 set_forward_dnsmasq()
 {
 	local PORT="$1"
@@ -56,10 +75,39 @@ stop_forward_dnsmasq()
 	/etc/init.d/dnsmasq restart
 }
 
-set_iptable()
+set_main_dns()
 {
-	local ipv6_server=$1
-	local tcp_server=$2
+	local hostip
+	hostip="$(uci -q get network.lan.ipaddr | sed 's/\/.*//g')"
+	dnsmasq_port="$(uci -q get dhcp.@dnsmasq[0].port)"
+	[ -z "$dnsmasq_port" ] && dnsmasq_port="53"
+	
+	[ -z "$hostip" ] && return
+	[ "$dnsmasq_port" = "53" ] && {
+		uci -q set dhcp.@dnsmasq[0].port=0
+		uci -q add_list dhcp.lan.dhcp_option="6,$hostip"
+	}
+	stop_dnsmasq_dns_redirect
+
+	uci commit dhcp
+	/etc/init.d/dnsmasq reload
+}
+
+stop_main_dns()
+{
+	local norestart="$1"
+	hostip="$(uci -q get network.lan.ipaddr)"
+	dnsmasq_port="$(uci -q get dhcp.@dnsmasq[0].port)"
+	[ "$dnsmasq_port" != "0" ] && return
+	reset_dnsmasq_dns_redirect
+	uci -q set dhcp.@dnsmasq[0].port=53
+	uci -q del_list dhcp.lan.dhcp_option="6,$hostip"
+	uci commit dhcp
+	[ "$norestart" != "1" ] && /etc/init.d/dnsmasq reload
+}
+
+set_nftables()
+{
 	uci -q batch <<-EOF >/dev/null 2>&1
   delete firewall.AdGuardHome
 	set firewall.AdGuardHome=include
@@ -69,55 +117,24 @@ set_iptable()
 	commit firewall
 EOF
 
-	IPS="`ifconfig | grep "inet addr" | grep -v ":127" | grep "Bcast" | awk '{print $2}' | awk -F : '{print $2}'`"
-	for IP in $IPS
-	do
-		if [ "$tcp_server" == "1" ]; then
-			iptables -t nat -A PREROUTING -p tcp -d $IP --dport 53 -j REDIRECT --to-ports $AdGuardHome_PORT >/dev/null 2>&1
-		fi
-		iptables -t nat -A PREROUTING -p udp -d $IP --dport 53 -j REDIRECT --to-ports $AdGuardHome_PORT >/dev/null 2>&1
-	done
+	nft add table inet AdGuardHome
+	nft add chain inet AdGuardHome prerouting "{ type nat hook prerouting priority -95; policy accept; }"
+	nft add rule inet AdGuardHome prerouting "meta nfproto { ipv4, ipv6 } udp dport 53 counter redirect to :$AdGuardHome_PORT comment \"AdGuardHome DNS HIJACK\""
 
-	if [ "$ipv6_server" == 0 ]; then
-		return
-	fi
-
-	IPS="`ifconfig | grep "inet6 addr" | grep -v " fe80::" | grep -v " ::1" | grep "Global" | awk '{print $3}'`"
-	for IP in $IPS
-	do
-		if [ "$tcp_server" == "1" ]; then
-			ip6tables -t nat -A PREROUTING -p tcp -d $IP --dport 53 -j REDIRECT --to-ports $AdGuardHome_PORT >/dev/null 2>&1
-		fi
-		ip6tables -t nat -A PREROUTING -p udp -d $IP --dport 53 -j REDIRECT --to-ports $AdGuardHome_PORT >/dev/null 2>&1
-	done
+	set_main_dns
 
 }
 
-clear_iptable()
+clear_nftables()
 {
 	uci -q batch <<-EOF >/dev/null 2>&1
   delete firewall.AdGuardHome
 	commit firewall
 EOF
-	local OLD_PORT="$1"
-	local ipv6_server=$2
-	IPS="`ifconfig | grep "inet addr" | grep -v ":127" | grep "Bcast" | awk '{print $2}' | awk -F : '{print $2}'`"
-	for IP in $IPS
-	do
-		iptables -t nat -D PREROUTING -p udp -d $IP --dport 53 -j REDIRECT --to-ports $OLD_PORT >/dev/null 2>&1
-		iptables -t nat -D PREROUTING -p tcp -d $IP --dport 53 -j REDIRECT --to-ports $OLD_PORT >/dev/null 2>&1
-	done
 
-	if [ "$ipv6_server" == 0 ]; then
-		return
-	fi
-	echo "warn ip6tables nat mod is needed"
-	IPS="`ifconfig | grep "inet6 addr" | grep -v " fe80::" | grep -v " ::1" | grep "Global" | awk '{print $3}'`"
-	for IP in $IPS
-	do
-		ip6tables -t nat -D PREROUTING -p udp -d $IP --dport 53 -j REDIRECT --to-ports $OLD_PORT >/dev/null 2>&1
-		ip6tables -t nat -D PREROUTING -p tcp -d $IP --dport 53 -j REDIRECT --to-ports $OLD_PORT >/dev/null 2>&1
-	done
+	! nft --check list table inet AdGuardHome > "/dev/null" 2>&1 || nft delete table inet AdGuardHome
+
+	stop_main_dns "0"
 
 }
 
@@ -182,6 +199,7 @@ rm_port53()
 	fi
 	config_editor "dns.port" "$dnsmasq_port" "$configpath"
 	uci set dhcp.@dnsmasq[0].port="53"
+	reset_dnsmasq_dns_redirect
 	uci commit dhcp
 	/etc/init.d/dnsmasq reload
 }
@@ -202,6 +220,7 @@ use_port53()
 	fi
 	config_editor "dns.port" "53" "$configpath"
 	uci set dhcp.@dnsmasq[0].port="$AdGuardHome_PORT"
+	stop_dnsmasq_dns_redirect
 	uci commit dhcp
 	/etc/init.d/dnsmasq reload
 }
@@ -239,7 +258,7 @@ _do_redirect()
 	if [ "$old_redirect" != "$redirect" ] || [ "$old_port" != "$AdGuardHome_PORT" ] || [ "$old_enabled" = "1" -a "$enabled" = "0" ]; then
 		if [ "$old_redirect" != "none" ]; then
 			if [  "$old_redirect" == "redirect" -a "$old_port" != "0" ]; then
-				clear_iptable "$old_port" "$ipv6_server"
+				clear_nftables
 			elif [ "$old_redirect" == "dnsmasq-upstream" ]; then
 				stop_forward_dnsmasq "$old_port"
 			elif [ "$old_redirect" == "exchange" ]; then
@@ -248,7 +267,7 @@ _do_redirect()
 		fi
 	elif [ "$old_enabled" = "1" -a "$enabled" = "1" ]; then
 		if [  "$old_redirect" == "redirect" -a "$old_port" != "0" ]; then
-			clear_iptable "$old_port" "$ipv6_server"
+			clear_nftables
 		fi
 	fi
 	uci delete AdGuardHome.@AdGuardHome[0].old_redirect 2>/dev/null
@@ -263,7 +282,7 @@ _do_redirect()
 		return 1
 	fi
 	if [ "$redirect" = "redirect" ]; then
-		set_iptable $ipv6_server $tcp_server
+		set_nftables
 	elif [ "$redirect" = "dnsmasq-upstream" ]; then
 		set_forward_dnsmasq "$AdGuardHome_PORT"
 	elif [ "$redirect" == "exchange" -a "$(uci get dhcp.@dnsmasq[0].port 2>/dev/null)" == "53" ]; then
