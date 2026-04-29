@@ -3,7 +3,7 @@
 # AutoUpdate for Openwrt
 # Dependences: wget-ssl/wget/uclient-fetch curl jq expr sysupgrade
 
-Version=V6.10.5.d1
+Version=V6.10.5.1
 
 function TITLE() {
 	clear && echo "Openwrt-AutoUpdate Script by Hyy2001 (${Author} Diy)${Version}"
@@ -91,9 +91,14 @@ EOF
 function MEMINFO() {
 	[[ ! $1 || ! $* =~ (All|Mem|Swap) ]] && return 1
 	local Mem Swap All Result
-	Mem=$(free | grep Mem: | awk '{Mem=$7/1024} {printf("%.0f\n",Mem)}' 2> /dev/null)
-	Swap=$(free | grep Swap: | awk '{Swap=$4/1024} {printf("%.0f\n",Swap)}' 2> /dev/null)
-	All=$(expr ${Mem} + ${Swap} 2> /dev/null)
+	read -r Mem Swap <<EOF
+$(free 2> /dev/null | awk '
+		/^Mem:/ {mem = sprintf("%.0f", $7 / 1024)}
+		/^Swap:/ {swap = sprintf("%.0f", $4 / 1024)}
+		END {print (mem ? mem : 0), (swap ? swap : 0)}
+	')
+EOF
+	All=$((Mem + Swap))
 	Result=$(eval echo '$'$1)
 	if [[ ${Result} ]]
 	then
@@ -109,23 +114,25 @@ function MEMINFO() {
 function SPACEINFO() {
 	[[ ! $1 ]] && return 1
 	local Result Path
-	Path="$(awk -F '/' '{print $2}' <<< $1)"
-	Result="$(df -m /${Path} 2> /dev/null | grep -v Filesystem | awk '{print $4}')"
+	Path="${1#/}"
+	Path="/${Path%%/*}"
+	[[ ${Path} == / ]] && Path="/"
+	Result="$(df -Pm -- "${Path}" 2> /dev/null | awk 'NR==2 {print $4}')"
 	if [[ ${Result} ]]
 	then
-		LOGGER "[/${Path}] 可用存储空间: [${Result}M]"
+		LOGGER "[${Path}] 可用存储空间: [${Result}M]"
 		echo "${Result}"
 		return 0
 	else
-		LOGGER "[/${Path}] 可用存储空间获取失败!"
+		LOGGER "[${Path}] 可用存储空间获取失败!"
 		return 1
 	fi
 }
 
 function RM() {
-	for i in $@
+	for i in "$@"
 	do
-		rm -r "$i" 2> /dev/null
+		rm -rf -- "$i" 2> /dev/null
 		LOGGER "删除文件: [$i]"
 	done
 }
@@ -211,7 +218,7 @@ function CHECK_ENV() {
 }
 
 function CHECK_PKG() {
-	local Result="$(command -v $1 2> /dev/null)"
+	local Result="$(command -v -- "$1" 2> /dev/null)"
 	if [[ ${Result} && $? == 0 ]]
 	then
 		echo true
@@ -278,7 +285,13 @@ function GET_SHA256SUM() {
 }
 
 function GET_VARIABLE() {
-	local Result="$(grep "$1=" $2 2> /dev/null | grep -v "#" | awk -F '=' '{print $2}')"
+	local Result="$(awk -F '=' -v key="$1" '
+		$0 !~ /^[[:blank:]]*#/ && $1 == key {
+			sub(/^[^=]*=/, "", $0)
+			print
+			exit
+		}
+	' "$2" 2> /dev/null)"
 	if [[ ${Result} && $? == 0 ]]
 	then
 		eval echo "${Result}"
@@ -292,40 +305,41 @@ function EDIT_VARIABLE() {
 	local Mode=$1
 	shift
 	[[ ! -s $1 ]] && ECHO r "未检测到环境变量文件: [$1] !" && return 1
+	local Config_File=$1 Key=$2 Value=$3 RETURN=1
 	case "${Mode}" in
 	edit)
-		if [[ ! $(GET_VARIABLE $2 $1) ]]
+		if [[ ! $(GET_VARIABLE "${Key}" "${Config_File}") ]]
 		then
-			LOGGER "[EDIT_VARIABLE] 新增环境变量 [$2 = $3]"
-			echo -e "\n$2=$3" >> $1
+			LOGGER "[EDIT_VARIABLE] 新增环境变量 [${Key} = ${Value}]"
+			echo -e "\n${Key}=${Value}" >> "${Config_File}"
 			RETURN=0
 		else
-			sed -i "s?$(GET_VARIABLE $2 $1)?$3?g" $1 2> /dev/null
+			sed -i "s?^${Key}=.*?${Key}=${Value}?" "${Config_File}" 2> /dev/null
 			if [[ $? == 0 ]]
 			then
-				LOGGER "[EDIT_VARIABLE] 环境变量 [$2 > $3] 修改成功!"
+				LOGGER "[EDIT_VARIABLE] 环境变量 [${Key} > ${Value}] 修改成功!"
 				RETURN=0
 			else
-				LOGGER "[EDIT_VARIABLE] 环境变量 [$2 > $3] 修改失败!"
+				LOGGER "[EDIT_VARIABLE] 环境变量 [${Key} > ${Value}] 修改失败!"
 				RETURN=1
 			fi
 		fi
 	;;
 	rm)
-		sed -i "/$2=/d" $1
+		sed -i "/^${Key}=/d" "${Config_File}"
 		if [[ $? == 0 ]]
 		then
-			LOGGER "[EDIT_VARIABLE] 从 $1 删除环境变量 [$2] ... 成功"
+			LOGGER "[EDIT_VARIABLE] 从 ${Config_File} 删除环境变量 [${Key}] ... 成功"
 			RETURN=0
 		else
-			LOGGER "[EDIT_VARIABLE] 从 $1 删除环境变量 [$2] ... 失败"
+			LOGGER "[EDIT_VARIABLE] 从 ${Config_File} 删除环境变量 [${Key}] ... 失败"
 			RETURN=1
 		fi
 	;;
 	esac
-	cp -a ${Config_Custom} ${Tmp_Path}/custom
-	grep -vE "^[[:blank:]]*$" ${Tmp_Path}/custom > ${Config_Custom}
-	echo >> ${Config_Custom}
+	grep -vE "^[[:blank:]]*$" "${Config_File}" > "${Tmp_Path}/custom" 2> /dev/null
+	cat "${Tmp_Path}/custom" > "${Config_File}"
+	echo >> "${Config_File}"
 	return ${RETURN}
 }
 
@@ -333,8 +347,8 @@ function LOAD_CONFIG() {
 	while [[ $1 ]];do
 		if [[ -s $1 ]]
 		then
-			chmod +x $1
-			source $1
+			chmod +x "$1"
+			source "$1"
 		else
 			LOGGER "未检测到环境变量列表: [$1]"
 		fi
@@ -506,11 +520,11 @@ function CHECK_PKG_DEPENDS() {
 }
 
 function CHECK_TIME() {
-	[[ -s $1 && -n $(find $1 -type f -mmin -$2) ]] && {
+	[[ -s $1 && -n $(find "$1" -type f -mmin -"$2" -print -quit 2> /dev/null) ]] && {
 		echo true
 		return 0
 	} || {
-		RM $1
+		RM "$1"
 		echo false
 		return 1
 	}
@@ -522,7 +536,7 @@ function ANALYZE_API() {
 		exit 1
 	}
 	local API_Cache=${Tmp_Path}/API_Cache
-	if [[ $(CHECK_TIME ${API_File} 1) == false ]]
+	if [[ $(CHECK_TIME ${API_Cache} 1) == false ]]
 	then
 		DOWNLOADER --path ${Tmp_Path} --file-name API_Cache --dl ${DL_DEPENDS[@]} --url "${Github_API}@@1 $(Proxy_X ${Github_Release}/API G@@1 F@@1 E@@1)" --no-url-name --timeout 5
 		[[ ! $? == 0 || -z $(cat ${API_Cache} 2> /dev/null) ]] && {
@@ -1148,23 +1162,25 @@ function Proxy_X() {
 }
 
 function NETWORK_CHECK() {
-	case $(GET_DOWNLOADER) in
+	local Downloader
+	Downloader="$(GET_DOWNLOADER)"
+	case "${Downloader}" in
 	curl)
 		local Result=$(curl -I -o /dev/null -skL --connect-timeout 3 --retry 0 -w %{http_code} $1 2> /dev/null | tail -n1)
 		if [[ ${Result} == 204 ]]
 		then
 			echo true
-			LOGGER "[$(GET_DOWNLOADER)] [$1] 连通性测试正常!"
+			LOGGER "[${Downloader}] [$1] 连通性测试正常!"
 			return 0
 		fi
 	;;
 	wget | wget-ssl)
 		rm -f "${Tmp_Path}/generate_204" > /dev/null 2>&1
-		$(GET_DOWNLOADER) "$1" -q --no-check-certificate --spider --timeout=3 --no-dns-cache -4 --tries 1
+		"${Downloader}" "$1" -q --no-check-certificate --spider --timeout=3 --no-dns-cache -4 --tries 1
 		if [[ $? == 0 ]]
 		then
 			echo true
-			LOGGER "[$(GET_DOWNLOADER)] [$1] 连通性测试正常!"
+			LOGGER "[${Downloader}] [$1] 连通性测试正常!"
 			return 0
 		fi
 	;;
@@ -1174,7 +1190,7 @@ function NETWORK_CHECK() {
 		if [[ $? == 0 ]]
 		then
 			echo true
-			LOGGER "[$(GET_DOWNLOADER)] [$1] 连通性测试正常!"
+			LOGGER "[${Downloader}] [$1] 连通性测试正常!"
 			return 0
 		fi
 	;;
@@ -1183,7 +1199,7 @@ function NETWORK_CHECK() {
 	;;
 	esac
 	echo false
-	LOGGER "[$(GET_DOWNLOADER)] [$1] 连通性测试失败!"
+	LOGGER "[${Downloader}] [$1] 连通性测试失败!"
 	return 1
 }
 
@@ -1388,7 +1404,7 @@ function AutoUpdate_Main() {
 }
 
 function KILL_PROCESS() {
-	local i ; for i in $(ps -ef 2> /dev/null | grep -v grep | grep $1 | grep -v $$ | awk '{print $1}' 2> /dev/null)
+	local i ; for i in $(ps -ef 2> /dev/null | grep -F -v grep | grep -F -- "$1" | awk -v self="$$" '$2 != self {print $2}' 2> /dev/null)
 	do
 		kill -9 ${i} 2> /dev/null &
 		LOGGER "结束进程: ${i}"
