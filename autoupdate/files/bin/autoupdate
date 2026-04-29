@@ -3,7 +3,7 @@
 # AutoUpdate for Openwrt
 # Dependences: wget-ssl/wget/uclient-fetch curl jq expr sysupgrade
 
-Version=V6.10.5.1
+Version=V6.10.5.2
 
 function TITLE() {
 	clear && echo "Openwrt-AutoUpdate Script by Hyy2001 (${Author} Diy)${Version}"
@@ -463,20 +463,23 @@ function ALTER_FLAG() {
 }
 
 function UPDATE_SCRIPT() {
-	if [[ ! -d $1 ]]
+	local Script_Target_Path="$1"
+	shift
+	local Script_URLs=("$@")
+	if [[ ! -d ${Script_Target_Path} ]]
 	then
-		mkdir -p $1 2> /dev/null || {
-			ECHO r "程序保存路径 [$1] 创建失败!"
+		mkdir -p "${Script_Target_Path}" 2> /dev/null || {
+			ECHO r "程序保存路径 [${Script_Target_Path}] 创建失败!"
 			return 1
 		}
 	fi
-	ECHO "程序保存路径: [$1]"
-	DOWNLOADER --file-name autoupdate --no-url-name --dl ${DL_DEPENDS[@]} --url $2 --path ${Tmp_Path} --timeout 5 --type 更新文件
+	ECHO "程序保存路径: [${Script_Target_Path}]"
+	DOWNLOADER --file-name autoupdate --no-url-name --dl ${DL_DEPENDS[@]} --url "${Script_URLs[@]}" --path ${Tmp_Path} --timeout 5 --type 更新文件
 	if [[ $? == 0 && -f ${Tmp_Path}/autoupdate ]]
 	then
 		chmod +x ${Tmp_Path}/autoupdate
 		Script_Version="$(awk -F '=' '/Version/{print $2}' ${Tmp_Path}/autoupdate | awk 'NR==1')"
-		mv -f ${Tmp_Path}/autoupdate $1
+		mv -f ${Tmp_Path}/autoupdate "${Script_Target_Path}"
 		if [[ $? == 0 ]]
 		then
 			ECHO y "[${Version} > ${Script_Version}] autoupdate 程序更新成功!"
@@ -1028,8 +1031,12 @@ function DOWNLOADER() {
 				DL_Name="${DL_URL_Final##*/}"
 				DL_Final="${DL_Template} ${DL_Path}/${DL_Name} ${DL_URL_Final}"
 			else
-				[[ ${No_URL_Name} == 1 ]] && DL_Final="${DL_Template} ${DL_Path}/${DL_Name} ${DL_URL_Final}" || \
+				if [[ ${No_URL_Name} == 1 || ${DL_URL_Final##*/} == ${DL_Name} ]]
+				then
+					DL_Final="${DL_Template} ${DL_Path}/${DL_Name} ${DL_URL_Final}"
+				else
 					DL_Final="${DL_Template} ${DL_Path}/${DL_Name} ${DL_URL_Final}/${DL_Name}"
+				fi
 			fi
 			[[ -s ${DL_Path}/${DL_Name} ]] && \
 				RM ${DL_Path}/${DL_Name}
